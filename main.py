@@ -13,25 +13,24 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "TU_CHAT_ID_AQUI")
 
 DESCUENTO_MINIMO_PCT = 15
 KM_PERCENTIL         = 30
-RESULTADOS_POR_AUTO  = 50  # hasta 50 por modelo (límite de ML)
+RESULTADOS_POR_AUTO  = 50
 
-# Modelos a monitorear — (nombre visible, query de búsqueda en ML)
 MODELOS = [
-    ("VW Gol / Gol Trend",    "volkswagen gol"),
-    ("Toyota Hilux",          "toyota hilux"),
-    ("Chevrolet Corsa/Classic","chevrolet corsa"),
-    ("VW Amarok",             "volkswagen amarok"),
-    ("Ford Ranger",           "ford ranger"),
-    ("Ford EcoSport",         "ford ecosport"),
-    ("Toyota Corolla",        "toyota corolla"),
-    ("Peugeot 208",           "peugeot 208"),
-    ("Fiat Palio",            "fiat palio"),
-    ("Ford Ka",               "ford ka"),
-    ("Mercedes C200",         "mercedes benz c200"),
-    ("Mercedes C250",         "mercedes benz c250"),
-    ("VW Vento",              "volkswagen vento"),
-    ("VW Golf",               "volkswagen golf"),
-    ("VW Golf GTI",           "volkswagen golf gti"),
+    ("VW Gol / Gol Trend",     "volkswagen gol"),
+    ("Toyota Hilux",           "toyota hilux"),
+    ("Chevrolet Corsa/Classic", "chevrolet corsa"),
+    ("VW Amarok",              "volkswagen amarok"),
+    ("Ford Ranger",            "ford ranger"),
+    ("Ford EcoSport",          "ford ecosport"),
+    ("Toyota Corolla",         "toyota corolla"),
+    ("Peugeot 208",            "peugeot 208"),
+    ("Fiat Palio",             "fiat palio"),
+    ("Ford Ka",                "ford ka"),
+    ("Mercedes C200",          "mercedes benz c200"),
+    ("Mercedes C250",          "mercedes benz c250"),
+    ("VW Vento",               "volkswagen vento"),
+    ("VW Golf",                "volkswagen golf"),
+    ("VW Golf GTI",            "volkswagen golf gti"),
 ]
 # ─────────────────────────────────────────────
 
@@ -46,14 +45,8 @@ HEADERS = {
 
 
 def fetch_model(query: str, limit: int = 50) -> list[dict]:
-    """Busca publicaciones de un modelo específico en MLA."""
-    url = "https://api.mercadolibre.com/sites/MLA/search"
-    params = {
-        "q":        query,
-        "category": "MLA1744",
-        "limit":    limit,
-        "sort":     "date_desc",
-    }
+    url    = "https://api.mercadolibre.com/sites/MLA/search"
+    params = {"q": query, "category": "MLA1744", "limit": limit, "sort": "date_desc"}
     try:
         resp = requests.get(url, params=params, headers=HEADERS, timeout=20)
         if resp.status_code != 200:
@@ -89,7 +82,6 @@ def extract_year(attributes: list) -> int | None:
 def collect_all() -> list[dict]:
     all_listings = []
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Buscando modelos...\n")
-
     for nombre, query in MODELOS:
         items = fetch_model(query, RESULTADOS_POR_AUTO)
         count = 0
@@ -101,38 +93,37 @@ def collect_all() -> list[dict]:
             km    = extract_km(attrs)
             year  = extract_year(attrs)
             all_listings.append({
-                "id":      item.get("id"),
-                "title":   item.get("title", nombre),
-                "price":   price,
-                "km":      km,
-                "year":    year,
-                "modelo":  nombre,
-                "url":     item.get("permalink", ""),
+                "id":     item.get("id"),
+                "title":  item.get("title", nombre),
+                "price":  price,
+                "km":     km,
+                "year":   year,
+                "modelo": nombre,
+                "url":    item.get("permalink", ""),
             })
             count += 1
         print(f"  ✓ {nombre}: {count} publicaciones")
-
     print(f"\n[✓] Total: {len(all_listings)} autos recolectados.")
     return all_listings
 
 
+# ══════════════════════════════════════════════
+# MENSAJE 1 — Oportunidades del día
+# ══════════════════════════════════════════════
 def find_opportunities(listings: list[dict]) -> list[dict]:
-    # Agrupar por modelo + año
     groups: dict[str, list] = defaultdict(list)
     for item in listings:
         key = f"{item['modelo']} | {item['year'] or 'S/A'}"
         item["group_key"] = key
         groups[key].append(item)
 
-    # Promedios por grupo (mínimo 3 autos para comparar)
     group_stats = {}
     for key, items in groups.items():
         prices = [i["price"] for i in items]
         if len(prices) < 3:
             continue
-        group_stats[key] = {"mean": statistics.mean(prices), "count": len(prices)}
+        group_stats[key] = {"mean": statistics.mean(prices)}
 
-    # Percentil km/precio
     km_ratios = [i["km"] / i["price"] for i in listings if i["km"] and i["price"]]
     km_threshold = None
     if km_ratios:
@@ -145,13 +136,11 @@ def find_opportunities(listings: list[dict]) -> list[dict]:
         stats = group_stats.get(item.get("group_key", ""))
         if not stats:
             continue
-
         pct_bajo  = ((stats["mean"] - item["price"]) / stats["mean"]) * 100
         es_barato = pct_bajo >= DESCUENTO_MINIMO_PCT
         pocos_km  = False
         if km_threshold and item["km"] and item["price"]:
             pocos_km = (item["km"] / item["price"]) <= km_threshold
-
         if es_barato or pocos_km:
             opportunities.append({
                 **item,
@@ -166,16 +155,11 @@ def find_opportunities(listings: list[dict]) -> list[dict]:
     return opportunities[:20]
 
 
-def format_message(opportunities: list[dict]) -> str:
-    hoy = datetime.now().strftime("%d/%m/%Y")
+def format_oportunidades(opportunities: list[dict], hoy: str) -> str:
     if not opportunities:
-        return (
-            f"🚗 *Oportunidades de autos — {hoy}*\n\n"
-            "No se encontraron oportunidades destacadas hoy.\n"
-            "_ML Autos Bot_"
-        )
+        return f"🚗 *Oportunidades del día — {hoy}*\n\nNo se encontraron oportunidades hoy.\n_ML Autos Bot_"
 
-    lines = [f"🚗 *Oportunidades de autos — {hoy}*\n"]
+    lines = [f"🚗 *Oportunidades del día — {hoy}*\n"]
     for i, op in enumerate(opportunities, 1):
         precio_fmt   = f"${op['price']:,.0f}".replace(",", ".")
         promedio_fmt = f"${op['precio_promedio']:,.0f}".replace(",", ".")
@@ -189,7 +173,7 @@ def format_message(opportunities: list[dict]) -> str:
         emoji = "🔥" if op["score"] == 3 else "⭐"
         lines.append(
             f"{emoji} *{i}. {op['title']}*\n"
-            f"   📅 Año: {year_fmt}  |  🛣️ {km_fmt}\n"
+            f"   📅 {year_fmt}  |  🛣️ {km_fmt}\n"
             f"   💵 {precio_fmt} _(prom: {promedio_fmt})_\n"
             f"   {'  |  '.join(tags)}\n"
             f"   🔗 [Ver en ML]({op['url']})\n"
@@ -198,17 +182,63 @@ def format_message(opportunities: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ══════════════════════════════════════════════
+# MENSAJE 2 — Mejores precio/km por modelo
+# ══════════════════════════════════════════════
+def best_by_km_per_model(listings: list[dict]) -> dict[str, list[dict]]:
+    """Para cada modelo, devuelve el top 3 con menor ratio km/precio (más km por menos plata)."""
+    by_model: dict[str, list] = defaultdict(list)
+    for item in listings:
+        if item["km"] and item["price"] and item["km"] > 0:
+            item["precio_por_km"] = round(item["price"] / item["km"], 1)
+            by_model[item["modelo"]].append(item)
+
+    result = {}
+    for modelo, items in by_model.items():
+        sorted_items = sorted(items, key=lambda x: x["precio_por_km"])
+        result[modelo] = sorted_items[:3]
+    return result
+
+
+def format_mejor_por_km(best_by_model: dict, hoy: str) -> str:
+    lines = [f"📊 *Mejores precio/km por modelo — {hoy}*\n"]
+    lines.append("_(precio por kilómetro = cuánto pagás por cada km recorrido)_\n")
+
+    for nombre, _ in MODELOS:
+        items = best_by_model.get(nombre)
+        if not items:
+            continue
+        lines.append(f"🚘 *{nombre}*")
+        for i, op in enumerate(items, 1):
+            precio_fmt = f"${op['price']:,.0f}".replace(",", ".")
+            km_fmt     = f"{op['km']:,.0f} km".replace(",", ".")
+            ppkm_fmt   = f"${op['precio_por_km']:,.0f}/km".replace(",", ".")
+            year_fmt   = str(op["year"]) if op["year"] else "S/A"
+            lines.append(
+                f"  {i}. {op['title']} ({year_fmt})\n"
+                f"     💵 {precio_fmt}  |  🛣️ {km_fmt}  |  📉 {ppkm_fmt}\n"
+                f"     🔗 [Ver en ML]({op['url']})"
+            )
+        lines.append("")
+
+    lines.append("_ML Autos Bot_")
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════
+# TELEGRAM
+# ══════════════════════════════════════════════
 def send_telegram(message: str) -> bool:
     url     = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id":    TELEGRAM_CHAT_ID,
         "text":       message,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": False,
+        "disable_web_page_preview": True,
     }
     resp = requests.post(url, json=payload, timeout=15)
     if resp.status_code == 200:
-        print("✅ Mensaje enviado por Telegram.")
+        print("✅ Mensaje enviado.")
         return True
     print(f"❌ Error Telegram: {resp.status_code} — {resp.text}")
     return False
@@ -219,14 +249,19 @@ def main():
     print(f"  ML AUTOS BOT — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     print(f"{'='*50}\n")
 
-    listings      = collect_all()
+    hoy      = datetime.now().strftime("%d/%m/%Y")
+    listings = collect_all()
+
+    # ── Mensaje 1: Oportunidades ──
     opportunities = find_opportunities(listings)
     print(f"[✓] {len(opportunities)} oportunidades encontradas.")
-    message = format_message(opportunities)
-    print("\n--- PREVIEW ---")
-    print(message)
-    print("---------------\n")
-    send_telegram(message)
+    msg1 = format_oportunidades(opportunities, hoy)
+    send_telegram(msg1)
+
+    # ── Mensaje 2: Mejor precio/km por modelo ──
+    best = best_by_km_per_model(listings)
+    msg2 = format_mejor_por_km(best, hoy)
+    send_telegram(msg2)
 
 
 if __name__ == "__main__":

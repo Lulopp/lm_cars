@@ -1,0 +1,9 @@
+# railway.toml — configuración para Railway.app
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python main.py"
+
+# El cron se configura desde el dashboard de Railway
+# Horario: 0 22 * * *  (todos los días a las 22hs Argentina = UTC-3, o sea 01:00 UTC)

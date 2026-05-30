@@ -2,122 +2,114 @@ import requests
 import statistics
 import os
 import re
-import time
 from datetime import datetime
 from collections import defaultdict
-from bs4 import BeautifulSoup
 
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "TU_TOKEN_AQUI")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "TU_CHAT_ID_AQUI")
+ML_COOKIE          = os.getenv("ML_COOKIE",           "TU_COOKIE_AQUI")
 
 DESCUENTO_MINIMO_PCT = 15
 KM_PERCENTIL         = 30
-PAGINAS_POR_MODELO   = 2  # cada página trae ~48 autos
+RESULTADOS_POR_AUTO  = 50
 
 MODELOS = [
-    ("VW Gol / Gol Trend",      "volkswagen-gol"),
-    ("Toyota Hilux",            "toyota-hilux"),
-    ("Chevrolet Corsa/Classic",  "chevrolet-corsa"),
-    ("VW Amarok",               "volkswagen-amarok"),
-    ("Ford Ranger",             "ford-ranger"),
-    ("Ford EcoSport",           "ford-ecosport"),
-    ("Toyota Corolla",          "toyota-corolla"),
-    ("Peugeot 208",             "peugeot-208"),
-    ("Fiat Palio",              "fiat-palio"),
-    ("Ford Ka",                 "ford-ka"),
-    ("Mercedes C200",           "mercedes-benz-c200"),
-    ("Mercedes C250",           "mercedes-benz-c250"),
-    ("VW Vento",                "volkswagen-vento"),
-    ("VW Golf",                 "volkswagen-golf"),
-    ("VW Golf GTI",             "volkswagen-golf-gti"),
+    ("VW Gol / Gol Trend",      "volkswagen gol"),
+    ("Toyota Hilux",            "toyota hilux"),
+    ("Chevrolet Corsa/Classic",  "chevrolet corsa"),
+    ("VW Amarok",               "volkswagen amarok"),
+    ("Ford Ranger",             "ford ranger"),
+    ("Ford EcoSport",           "ford ecosport"),
+    ("Toyota Corolla",          "toyota corolla"),
+    ("Peugeot 208",             "peugeot 208"),
+    ("Fiat Palio",              "fiat palio"),
+    ("Ford Ka",                 "ford ka"),
+    ("Mercedes C200",           "mercedes benz c200"),
+    ("Mercedes C250",           "mercedes benz c250"),
+    ("VW Vento",                "volkswagen vento"),
+    ("VW Golf",                 "volkswagen golf"),
+    ("VW Golf GTI",             "volkswagen golf gti"),
 ]
 # ─────────────────────────────────────────────
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "es-AR,es;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-})
+def get_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "es-AR,es;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://listado.mercadolibre.com.ar/",
+        "Cookie": ML_COOKIE,
+    }
 
 
-def scrape_model(slug: str, paginas: int = 2) -> list[dict]:
-    """Scrapea resultados de búsqueda de ML para un modelo."""
-    results = []
-    for page in range(paginas):
-        offset = page * 48 + 1
-        url    = f"https://autos.mercadolibre.com.ar/{slug}_Desde_{offset}_NoIndex_True"
-        try:
-            resp = SESSION.get(url, timeout=20)
-            if resp.status_code != 200:
-                continue
-            soup = BeautifulSoup(resp.text, "html.parser")
-            cards = soup.select("li.ui-search-layout__item")
-            for card in cards:
-                try:
-                    title_el = card.select_one("h2.poly-box a, .ui-search-item__title")
-                    price_el = card.select_one(".andes-money-amount__fraction")
-                    link_el  = card.select_one("a.poly-component__title, a.ui-search-link")
-                    km_el    = card.select_one(".ui-search-item__attributes-list li:nth-child(2), .poly-attributes-list li")
-                    year_el  = card.select_one(".ui-search-item__attributes-list li:first-child, .poly-attributes-list li:first-child")
+def fetch_model(query: str, limit: int = 50) -> list[dict]:
+    url    = "https://api.mercadolibre.com/sites/MLA/search"
+    params = {
+        "q":        query,
+        "category": "MLA1744",
+        "limit":    limit,
+        "sort":     "date_desc",
+    }
+    try:
+        resp = requests.get(url, params=params, headers=get_headers(), timeout=20)
+        if resp.status_code != 200:
+            print(f"  ⚠️ Error {resp.status_code} para '{query}'")
+            return []
+        return resp.json().get("results", [])
+    except Exception as e:
+        print(f"  ⚠️ Excepción para '{query}': {e}")
+        return []
 
-                    if not title_el or not price_el:
-                        continue
 
-                    price_str = re.sub(r"[^\d]", "", price_el.text)
-                    if not price_str:
-                        continue
-                    price = int(price_str)
+def extract_km(attributes: list) -> int | None:
+    for attr in attributes:
+        if attr.get("id") in ("KILOMETERS", "ODOMETER"):
+            try:
+                val = re.sub(r"[^\d]", "", attr.get("value_name", ""))
+                return int(val) if val else None
+            except (ValueError, AttributeError):
+                pass
+    return None
 
-                    km   = None
-                    year = None
 
-                    if km_el:
-                        km_text = km_el.text.strip()
-                        km_nums = re.sub(r"[^\d]", "", km_text)
-                        if km_nums and "km" in km_text.lower():
-                            km = int(km_nums)
-
-                    if year_el:
-                        year_text = year_el.text.strip()
-                        year_match = re.search(r"(19|20)\d{2}", year_text)
-                        if year_match:
-                            year = int(year_match.group())
-
-                    link = link_el["href"] if link_el and link_el.get("href") else url
-
-                    results.append({
-                        "title": title_el.text.strip(),
-                        "price": price,
-                        "km":    km,
-                        "year":  year,
-                        "url":   link,
-                    })
-                except Exception:
-                    continue
-        except Exception as e:
-            print(f"  ⚠️ Error scraping {url}: {e}")
-        time.sleep(1)
-    return results
+def extract_year(attributes: list) -> int | None:
+    for attr in attributes:
+        if attr.get("id") == "VEHICLE_YEAR":
+            try:
+                return int(attr.get("value_name", ""))
+            except (ValueError, AttributeError):
+                pass
+    return None
 
 
 def collect_all() -> list[dict]:
     all_listings = []
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Scrapeando MercadoLibre...\n")
-    for nombre, slug in MODELOS:
-        items = scrape_model(slug, PAGINAS_POR_MODELO)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Buscando modelos...\n")
+    for nombre, query in MODELOS:
+        items = fetch_model(query, RESULTADOS_POR_AUTO)
+        count = 0
         for item in items:
-            item["modelo"] = nombre
-        all_listings.extend(items)
-        print(f"  ✓ {nombre}: {len(items)} publicaciones")
-        time.sleep(1)
+            price = item.get("price")
+            if not price:
+                continue
+            attrs = item.get("attributes", [])
+            km    = extract_km(attrs)
+            year  = extract_year(attrs)
+            all_listings.append({
+                "id":     item.get("id"),
+                "title":  item.get("title", nombre),
+                "price":  price,
+                "km":     km,
+                "year":   year,
+                "modelo": nombre,
+                "url":    item.get("permalink", ""),
+            })
+            count += 1
+        print(f"  ✓ {nombre}: {count} publicaciones")
     print(f"\n[✓] Total: {len(all_listings)} autos recolectados.")
     return all_listings
 
